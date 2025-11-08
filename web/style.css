@@ -1,18 +1,24 @@
 /* 基础样式和变量 */
 :root {
-    --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    --success-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    /* 主色从紫色 → 黛青浅色 */
+    --primary-gradient: linear-gradient(135deg, #3AAFA9 0%, #7FDBDA 100%);
+    --secondary-gradient: linear-gradient(135deg, #7FDBDA 0%, #A5E6DF 100%);
+    --success-gradient: linear-gradient(135deg, #3AAFA9 0%, #A5E6DF 100%);
+
+    /* 背景保持深色不变 */
     --bg-primary: #0f0f1e;
     --bg-secondary: #1a1a2e;
     --bg-tertiary: #252538;
+
     --text-primary: #ffffff;
     --text-secondary: #a0a0b8;
+
     --border-color: rgba(255, 255, 255, 0.1);
     --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
+
 
 * {
     margin: 0;
@@ -24,7 +30,9 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
     background: var(--bg-primary);
     color: var(--text-primary);
-    line-height: 1.6;
+    /* --- 优化点 1: 全局行高和字间距 --- */
+    line-height: 1.7; /* 从 1.6 增加到 1.7，增加呼吸感 */
+    letter-spacing: 0.2px; /* 增加微小的字间距，避免文字拥挤 */
     overflow: hidden;
 }
 
@@ -62,6 +70,8 @@ body {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    /* --- 优化点 2: 标题字间距收紧 --- */
+    letter-spacing: -0.5px; /* 标题文字略微收紧，更显精致 */
 }
 
 .sidebar-content {
@@ -108,7 +118,7 @@ body {
 
 .new-chat-btn:hover {
     transform: translateY(-2px);
-    box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 8px 20px rgba(58, 175, 169, 0.4);
 }
 
 .new-chat-btn:active {
@@ -200,7 +210,7 @@ body {
 
 .doc-item:hover {
     background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(102, 126, 234, 0.3);
+    border-color: rgba(58, 175, 169, 0.3);
 }
 
 .doc-name {
@@ -250,7 +260,7 @@ body {
 
 .reload-btn:hover {
     background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(102, 126, 234, 0.5);
+    border-color: rgba(58, 175, 169, 0.5);
 }
 
 /* 主内容区 */
@@ -309,12 +319,15 @@ body {
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    /* --- 优化点 2: 标题字间距收紧 --- */
+    letter-spacing: -1px;
 }
 
 .welcome-message p {
     font-size: 16px;
     color: var(--text-secondary);
     margin-bottom: 32px;
+    line-height: 1.8; /* 欢迎语的段落行高可以更宽松 */
 }
 
 .welcome-features {
@@ -395,16 +408,32 @@ body {
 
 .message-bubble {
     display: inline-block;
-    padding: 14px 18px;
+    padding: 14px 20px; /* 稍微增加水平内边距 */
     border-radius: 16px;
     font-size: 15px;
-    line-height: 1.6;
     word-wrap: break-word;
+    /* --- 优化点 3: 聊天内容可读性核心优化 --- */
+    line-height: 1.75;      /* 显著增加行高 */
+    letter-spacing: 0.3px; /* 增加字间距 */
+    text-align: left; /* 保证用户消息气泡内的文字也是左对齐，提高阅读连贯性 */
+}
+
+/* --- 优化点 4: 优化聊天气泡内 Markdown 元素的间距 --- */
+.message-bubble p {
+    margin-bottom: 1em; /* 段落下方增加间距 */
+}
+.message-bubble p:last-child {
+    margin-bottom: 0; /* 最后一段不需要下边距 */
+}
+.message-bubble ul, .message-bubble ol {
+    padding-left: 20px; /* 列表增加内边距 */
+    margin-bottom: 1em;
 }
 
 .message.user .message-bubble {
     background: var(--secondary-gradient);
     border-bottom-right-radius: 4px;
+    color: #1a1a2e; /* 用户气泡用深色文字，对比度更高 */
 }
 
 .message.assistant .message-bubble {
@@ -439,6 +468,7 @@ body {
     font-size: 12px;
     border-left: 2px solid;
     border-image: var(--primary-gradient) 1;
+    line-height: 1.6; /* 来源信息的行高不需要太大 */
 }
 
 .source-name {
@@ -456,7 +486,7 @@ body {
 }
 
 .source-tag {
-    background: rgba(102, 126, 234, 0.1);
+    background: rgba(58, 175, 169, 0.15);
     padding: 2px 6px;
     border-radius: 4px;
 }
@@ -523,11 +553,13 @@ body {
     max-height: 200px;
     min-height: 48px;
     transition: border-color 0.2s;
+    /* --- 优化点 5: 输入框行高 --- */
+    line-height: 1.6; /* 确保多行输入时行距舒适 */
 }
 
 #messageInput:focus {
     outline: none;
-    border-color: rgba(102, 126, 234, 0.5);
+    border-color: rgba(58, 175, 169, 0.5);
 }
 
 #messageInput::placeholder {
@@ -551,7 +583,7 @@ body {
 
 .send-btn:hover:not(:disabled) {
     transform: scale(1.05);
-    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 6px 20px rgba(58, 175, 169, 0.4);
 }
 
 .send-btn:active:not(:disabled) {
@@ -588,7 +620,7 @@ body {
 }
 
 .toast.success {
-    border-left: 3px solid #4facfe;
+    border-left: 3px solid #3AAFA9;
 }
 
 .toast.error {
@@ -628,12 +660,5 @@ body {
 
     .message {
         max-width: 100%;
-    }
-}
-
-/* 深色模式优化 */
-@media (prefers-color-scheme: dark) {
-    body {
-        background: var(--bg-primary);
     }
 }

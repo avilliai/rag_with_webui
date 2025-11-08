@@ -25,6 +25,10 @@ import google.generativeai as genai
 import re
 from collections import defaultdict
 
+from starlette.staticfiles import StaticFiles
+
+from implements.RAGConfig import RAGConfig
+
 API_KEY = 'AIzaSyCNwmo17IETTpEAhCp9mvrtaovXteITZDM'
 
 genai.configure(api_key=API_KEY)
@@ -32,25 +36,6 @@ os.environ["http_proxy"] = "http://127.0.0.1:10809"
 os.environ["https_proxy"] = "http://127.0.0.1:10809"
 
 
-class RAGConfig:
-    """RAG 系统配置"""
-    def __init__(
-        self,
-        max_results: int = 8,
-        similarity_threshold: Optional[float] = None,
-        chunk_size: int = 1000,  # 增大以保留更多上下文
-        min_chunk_size: int = 200,
-        chunk_overlap: int = 250,  # 增加重叠
-        use_hybrid_search: bool = True,  # 启用混合检索
-        keyword_boost: float = 0.3  # 关键词匹配的权重提升
-    ):
-        self.max_results = max_results
-        self.similarity_threshold = similarity_threshold
-        self.chunk_size = chunk_size
-        self.min_chunk_size = min_chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.use_hybrid_search = use_hybrid_search
-        self.keyword_boost = keyword_boost
 
 
 class GeminiRAG:
@@ -635,9 +620,7 @@ class GeminiRAG:
         }, ensure_ascii=False) + '\n'
 
         # 构建包含历史的 prompt
-        system_prompt = """你是一个专业的政治学知识解答模型，你必须基于检索到的文档内容回答问题。
-    给出系统、学术化的解答。你不被允许遗漏任何文档中的信息。
-    如果文档中没有相关信息,请说明无法回答。"""
+        system_prompt = """你是一个专业的政治学知识解答模型，你需要基于检索到的文档内容回答问题。给出系统、学术化的解答。以markdown格式发送给我。"""
 
         # 创建或使用现有的 chat 会话
         if chat_history:
@@ -647,7 +630,7 @@ class GeminiRAG:
             chat = self.chat_model.start_chat()
 
         # 构建用户消息
-        user_message = f"""检索到的文档:
+        user_message = f"""{system_prompt}检索到的文档:
     {context}
 
     问题: {query}
@@ -1120,6 +1103,14 @@ async def reload_documents(request: ReloadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+app.mount("/", StaticFiles(directory="web", html=True), name="web")
+
+# 也可以用以下方式，显式地为根路径提供index.html
+# @app.get("/")
+# async def read_index():
+#    return FileResponse('web/index.html')
+
+
 def start_fastapi(host='0.0.0.0', port=8000):
     """启动 FastAPI 服务"""
     import uvicorn
@@ -1132,8 +1123,8 @@ def start_fastapi(host='0.0.0.0', port=8000):
     get_rag()
 
     print("\n✅ RAG 系统初始化完成")
-    print(f"🌐 API 服务运行在: http://{host}:{port}")
-    print(f"📚 API 文档: http://{host}:{port}/docs")
+    print(f"🌐 Web UI 访问地址: http://{host}:{port}")
+    print(f"📚 API 文档 (Swagger): http://{host}:{port}/docs")
     print("\n📡 可用的 API 端点:")
     print(f"   • GET  /api/health              - 健康检查")
     print(f"   • GET  /api/info                - 系统信息")
@@ -1149,11 +1140,6 @@ def start_fastapi(host='0.0.0.0', port=8000):
 
 
 if __name__ == "__main__":
-    import sys
-
+    # 移除原有的main()函数调用和命令行参数判断
+    # 直接启动FastAPI服务
     start_fastapi(host='0.0.0.0', port=8000)
-    #if len(sys.argv) > 1 and sys.argv[1] == 'api':
-        #start_fastapi(host='0.0.0.0', port=8000)
-    #else:
-        # 原来的测试代码
-        #main()
