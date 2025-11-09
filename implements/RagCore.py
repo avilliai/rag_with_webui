@@ -7,6 +7,26 @@ from typing import Dict, List, Optional, Tuple
 import chromadb
 from sentence_transformers import SentenceTransformer
 
+# PDF和EPUB支持
+try:
+    import PyPDF2
+    import fitz  # PyMuPDF
+
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    print("⚠️  未安装PDF库,请运行: pip install PyPDF2 PyMuPDF")
+
+try:
+    import ebooklib
+    from ebooklib import epub
+    from bs4 import BeautifulSoup
+
+    EPUB_SUPPORT = True
+except ImportError:
+    EPUB_SUPPORT = False
+    print("⚠️  未安装EPUB库,请运行: pip install ebooklib beautifulsoup4")
+
 
 class RAGConfig:
     """RAG 系统配置类"""
@@ -88,6 +108,115 @@ class RAGRetriever:
         with open(file_path, 'rb') as f:
             return hashlib.md5(f.read()).hexdigest()
 
+    def _clean_text(self, text: str) -> str:
+        """清理文本中的异常字符和格式问题"""
+        if not text:
+            return ""
+
+        # 移除空字符和控制字符（保留换行符、制表符）
+        text = ''.join(char for char in text if char.isprintable() or char in '\n\t')
+
+        # 规范化空白字符
+        text = re.sub(r'[ \t]+', ' ', text)  # 多个空格/制表符变为一个空格
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # 多个空行变为两个换行
+
+        # 移除页眉页脚常见模式
+        text = re.sub(r'第\s*\d+\s*页.*?共\s*\d+\s*页', '', text)
+        text = re.sub(r'Page\s+\d+\s+of\s+\d+', '', text, flags=re.IGNORECASE)
+
+        return text.strip()
+
+    def _read_pdf_file(self, file_path: Path) -> str:
+        """读取PDF文件,使用多种方法确保健壮性"""
+        if not PDF_SUPPORT:
+            print(f"⚠️  跳过PDF文件 {file_path}: 未安装PDF支持库")
+            return None
+
+        text = ""
+
+        # 方法1: 使用PyMuPDF (fitz) - 对中文支持更好
+        try:
+            doc = fitz.open(str(file_path))
+            for page_num, page in enumerate(doc, 1):
+                try:
+                    page_text = page.get_text()
+                    if page_text.strip():
+                        text += f"\n\n--- 第 {page_num} 页 ---\n\n{page_text}"
+                except Exception as e:
+                    print(f"   ⚠️  页面 {page_num} 提取失败: {e}")
+                    continue
+            doc.close()
+
+            if text.strip():
+                return self._clean_text(text)
+        except Exception as e:
+            print(f"   ⚠️  PyMuPDF提取失败: {e}, 尝试备用方法...")
+
+        # 方法2: 使用PyPDF2作为备用
+        try:
+            with open(file_path, 'rb') as f:
+                pdf_reader = PyPDF2.PdfReader(f)
+                for page_num in range(len(pdf_reader.pages)):
+                    try:
+                        page = pdf_reader.pages[page_num]
+                        page_text = page.extract_text()
+                        if page_text.strip():
+                            text += f"\n\n--- 第 {page_num + 1} 页 ---\n\n{page_text}"
+                    except Exception as e:
+                        print(f"   ⚠️  页面 {page_num + 1} 提取失败: {e}")
+                        continue
+
+            if text.strip():
+                return self._clean_text(text)
+        except Exception as e:
+            print(f"   ⚠️  PyPDF2提取失败: {e}")
+
+        # 如果两种方法都失败
+        if not text.strip():
+            print(f"   ❌ 无法从PDF提取文本: {file_path}")
+            return None
+
+        return self._clean_text(text)
+
+    def _read_epub_file(self, file_path: Path) -> str:
+        """读取EPUB文件"""
+        if not EPUB_SUPPORT:
+            print(f"⚠️  跳过EPUB文件 {file_path}: 未安装EPUB支持库")
+            return None
+
+        try:
+            book = epub.read_epub(str(file_path))
+            text_parts = []
+
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    try:
+                        content = item.get_content().decode('utf-8', errors='ignore')
+                        soup = BeautifulSoup(content, 'html.parser')
+
+                        # 移除script和style标签
+                        for script in soup(["script", "style"]):
+                            script.decompose()
+
+                        # 提取文本
+                        text = soup.get_text(separator='\n', strip=True)
+                        if text.strip():
+                            text_parts.append(text)
+                    except Exception as e:
+                        print(f"   ⚠️  EPUB章节解析失败: {e}")
+                        continue
+
+            if not text_parts:
+                print(f"   ❌ EPUB文件为空: {file_path}")
+                return None
+
+            full_text = "\n\n".join(text_parts)
+            return self._clean_text(full_text)
+
+        except Exception as e:
+            print(f"   ❌ 读取EPUB失败 {file_path}: {e}")
+            return None
+
     def _read_markdown_file(self, file_path: Path) -> str:
         """读取 Markdown 文件内容"""
         try:
@@ -95,6 +224,20 @@ class RAGRetriever:
                 return f.read()
         except Exception as e:
             print(f"⚠️  读取文件失败 {file_path}: {e}")
+            return None
+
+    def _read_file(self, file_path: Path) -> str:
+        """根据文件类型读取文件内容"""
+        suffix = file_path.suffix.lower()
+
+        if suffix == '.md':
+            return self._read_markdown_file(file_path)
+        elif suffix == '.pdf':
+            return self._read_pdf_file(file_path)
+        elif suffix == '.epub':
+            return self._read_epub_file(file_path)
+        else:
+            print(f"⚠️  不支持的文件类型: {file_path}")
             return None
 
     def _extract_keywords(self, text: str) -> List[str]:
@@ -246,51 +389,131 @@ class RAGRetriever:
         return chunks
 
     def load_documents_from_folder(self, folder_path: str = "./docs", force_reload: bool = False):
-        """从文件夹递归加载所有 Markdown 文档"""
+        """从文件夹递归加载所有支持的文档 - 智能增量更新版本"""
         docs_path = Path(folder_path)
         if not docs_path.exists():
             print(f"❌ 文件夹不存在: {folder_path}")
             return
 
-        md_files = list(docs_path.rglob("*.md"))
-        if not md_files:
-            print(f"⚠️  在 {folder_path} 中没有找到 Markdown 文件。")
+        # 支持的文件扩展名
+        supported_extensions = ['.md', '.pdf', '.epub']
+        all_files = []
+        for ext in supported_extensions:
+            all_files.extend(docs_path.rglob(f"*{ext}"))
+
+        if not all_files:
+            print(f"⚠️  在 {folder_path} 中没有找到支持的文档文件。")
             return
 
-        print(f"\n📁 找到 {len(md_files)} 个 Markdown 文件，开始处理...")
+        print(f"\n📁 找到 {len(all_files)} 个文档文件，开始智能增量分析...")
+        print(f"   支持格式: {', '.join(supported_extensions)}")
 
+        # ========== 第一步: 获取数据库现有文件状态 ==========
         total_docs_in_db = self.collection.count()
         all_metadatas = self.collection.get(limit=total_docs_in_db, include=["metadatas"])[
             'metadatas'] if total_docs_in_db > 0 else []
-        existing_hashes = {meta.get('source'): meta.get('file_hash') for meta in all_metadatas if
-                           'source' in meta and 'file_hash' in meta}
+
+        # 构建数据库中的文件映射: {相对路径: 哈希值}
+        existing_files_in_db = {}
+        for meta in all_metadatas:
+            if 'source' in meta and 'file_hash' in meta:
+                existing_files_in_db[meta['source']] = meta['file_hash']
+
+        print(f"   数据库中现有 {len(existing_files_in_db)} 个文档记录")
+
+        # ========== 第二步: 扫描文件系统,构建当前文件状态 ==========
+        current_files = {}  # {相对路径: (完整路径, 哈希值)}
+        for doc_file in all_files:
+            relative_path = str(doc_file.relative_to(docs_path)).replace('\\', '/')
+            current_hash = self._get_file_hash(str(doc_file))
+            current_files[relative_path] = (doc_file, current_hash)
+
+        # ========== 第三步: 分类文件状态 ==========
+        files_to_add = []  # 新增文件
+        files_to_update = []  # 修改文件
+        files_to_delete = []  # 删除文件
+        files_unchanged = []  # 未变化文件
+
+        # 检测新增和修改
+        for relative_path, (doc_file, current_hash) in current_files.items():
+            if relative_path not in existing_files_in_db:
+                files_to_add.append((relative_path, doc_file, current_hash))
+            elif existing_files_in_db[relative_path] != current_hash:
+                files_to_update.append((relative_path, doc_file, current_hash))
+            else:
+                files_unchanged.append(relative_path)
+
+        # 检测删除 (数据库中有,但文件系统中没有)
+        for db_path in existing_files_in_db.keys():
+            if db_path not in current_files:
+                files_to_delete.append(db_path)
+
+        # ========== 第四步: 输出变更摘要 ==========
+        print(f"\n📊 文件变更分析:")
+        print(f"   ✅ 未变化: {len(files_unchanged)} 个")
+        print(f"   ➕ 新增:   {len(files_to_add)} 个")
+        print(f"   🔄 修改:   {len(files_to_update)} 个")
+        print(f"   🗑️  删除:   {len(files_to_delete)} 个")
+
+        # 如果没有任何变更且不强制重载,直接返回
+        if not force_reload and not files_to_add and not files_to_update and not files_to_delete:
+            print(f"\n✅ 所有文档都是最新的，无需处理。")
+            print(f"📊 数据库当前共有 {self.collection.count()} 个文档块。")
+            return
+
+        # ========== 第五步: 处理删除的文件 ==========
+        if files_to_delete:
+            print(f"\n🗑️  正在删除 {len(files_to_delete)} 个已删除文档...")
+            ids_to_delete = []
+            for del_path in files_to_delete:
+                print(f"   🗑️  删除: {del_path}")
+                results = self.collection.get(where={"source": del_path}, include=[])
+                ids_to_delete.extend(results['ids'])
+
+            if ids_to_delete:
+                delete_batch_size = 500
+                for i in range(0, len(ids_to_delete), delete_batch_size):
+                    self.collection.delete(ids=ids_to_delete[i:i + delete_batch_size])
+                print(f"✅ 已删除 {len(ids_to_delete)} 个文档块")
+
+        # ========== 第六步: 处理更新的文件 ==========
+        if files_to_update:
+            print(f"\n🔄 正在处理 {len(files_to_update)} 个修改的文档...")
+            ids_to_delete = []
+            for relative_path, doc_file, current_hash in files_to_update:
+                print(f"   🔄 更新: {relative_path}")
+                results = self.collection.get(where={"source": relative_path}, include=[])
+                ids_to_delete.extend(results['ids'])
+
+            if ids_to_delete:
+                delete_batch_size = 500
+                for i in range(0, len(ids_to_delete), delete_batch_size):
+                    self.collection.delete(ids=ids_to_delete[i:i + delete_batch_size])
+                print(f"✅ 已删除 {len(ids_to_delete)} 个旧文档块")
+
+        # ========== 第七步: 添加新文档和更新文档 ==========
+        files_to_process = files_to_add + files_to_update
+
+        if not files_to_process:
+            print(f"\n📊 数据库当前共有 {self.collection.count()} 个文档块。")
+            return
+
+        print(f"\n💾 开始处理 {len(files_to_process)} 个文档...")
 
         new_docs_content = []
         new_docs_for_embedding = []
         new_ids = []
         new_metadatas = []
-        ids_to_delete = []
-        updated_count, new_count, skipped_count = 0, 0, 0
 
-        for md_file in md_files:
-            relative_path = str(md_file.relative_to(docs_path)).replace('\\', '/')
-            current_hash = self._get_file_hash(str(md_file))
+        for relative_path, doc_file, current_hash in files_to_process:
+            action = "新增" if (relative_path, doc_file, current_hash) in files_to_add else "更新"
+            print(f"\n📄 {action}: {relative_path}")
 
-            if relative_path in existing_hashes:
-                if not force_reload and existing_hashes[relative_path] == current_hash:
-                    skipped_count += 1
-                    continue
-                else:
-                    print(f"🔄 检测到文件变更: {relative_path}")
-                    updated_count += 1
-                    results = self.collection.get(where={"source": relative_path}, include=[])
-                    ids_to_delete.extend(results['ids'])
-            else:
-                new_count += 1
-
-            content = self._read_markdown_file(md_file)
+            content = self._read_file(doc_file)
             if content:
                 chunks = self._smart_chunk_document(content, relative_path)
+                print(f"   ✅ 生成 {len(chunks)} 个文档块")
+
                 for chunk_text, chunk_id, chunk_size, chunk_meta in chunks:
                     new_docs_content.append(chunk_text)
                     new_ids.append(chunk_id)
@@ -304,18 +527,13 @@ class RAGRetriever:
                         **chunk_meta
                     }
                     new_metadatas.append(metadata)
+            else:
+                print(f"   ❌ 文件读取失败，跳过")
 
-        if ids_to_delete:
-            print(f"🗑️  正在删除 {len(ids_to_delete)} 个旧的文档块...")
-            delete_batch_size = 500
-            for i in range(0, len(ids_to_delete), delete_batch_size):
-                self.collection.delete(ids=ids_to_delete[i:i + delete_batch_size])
-            print("✅ 旧文档块删除完毕。")
-
+        # ========== 第八步: 生成嵌入并添加到数据库 ==========
         if new_docs_content:
-            print(
-                f"\n💾 准备处理 {new_count} 个新文件和 {updated_count} 个更新文件，共计 {len(new_docs_content)} 个新文档块...")
-            print("🔄 生成增强嵌入向量（可能需要一些时间）...")
+            print(f"\n💾 共计 {len(new_docs_content)} 个新文档块待处理...")
+            print("🔄 生成嵌入向量（可能需要一些时间）...")
 
             embedding_batch_size = 32
             embeddings = []
@@ -325,7 +543,7 @@ class RAGRetriever:
                                                            show_progress_bar=False).tolist()
                 embeddings.extend(batch_embeddings)
                 print(
-                    f"   生成嵌入向量进度: {min(i + embedding_batch_size, len(new_docs_for_embedding))}/{len(new_docs_for_embedding)}")
+                    f"   嵌入向量进度: {min(i + embedding_batch_size, len(new_docs_for_embedding))}/{len(new_docs_for_embedding)}")
 
             db_batch_size = 4000
             total_batches = (len(new_ids) + db_batch_size - 1) // db_batch_size
@@ -343,14 +561,13 @@ class RAGRetriever:
                     embeddings=batch_embeddings,
                     metadatas=batch_metadatas
                 )
-                print(f"   批次 {i // db_batch_size + 1}/{total_batches} 添加成功。")
+                print(f"   批次 {i // db_batch_size + 1}/{total_batches} 添加成功")
 
-            print(f"✅ 成功添加/更新 {len(new_docs_content)} 个文档块。")
+            print(f"✅ 成功添加 {len(new_docs_content)} 个文档块")
 
-        if skipped_count > 0:
-            print(f"⏭️  跳过 {skipped_count} 个未修改的文档。")
-
-        print(f"\n📊 数据库当前共有 {self.collection.count()} 个文档块。")
+        # ========== 最终统计 ==========
+        print(f"\n✅ 增量更新完成!")
+        print(f"📊 数据库当前共有 {self.collection.count()} 个文档块")
 
     def search(self, query: str, n_results: Optional[int] = None) -> dict:
         """混合检索"""
@@ -378,7 +595,7 @@ class RAGRetriever:
                 semantic_score = 1 - dist
                 keyword_score = self._keyword_match_score(query, doc, meta.get('keywords', ''))
                 final_score = semantic_score * (
-                            1 - self.config.keyword_boost) + keyword_score * self.config.keyword_boost
+                        1 - self.config.keyword_boost) + keyword_score * self.config.keyword_boost
                 scored_results.append({
                     'id': doc_id,
                     'doc': doc,

@@ -324,7 +324,7 @@ async def ask_question_stream(request: QueryRequest):
 
                 # 更新会话历史
                 session_manager.add_message(session_id, 'user', query)
-                print(type(chat_manager))
+                #print(type(chat_manager))
                 if isinstance(chat_manager, OpenAIChatManager):
                     session_manager.add_message(session_id, 'assistant', full_answer)
                 else:

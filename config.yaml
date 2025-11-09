@@ -3,13 +3,13 @@ ai:
   # Gemini (Google) 配置
   gemini:
     enabled: true                           # 是否启用
-    api_key: ""  # API密钥（可用环境变量 GEMINI_API_KEY 覆盖）
+    api_key: ""  # API密钥
     model_name: "gemini-2.5-flash"         # 模型名称: gemini-pro, gemini-2.5-flash
 
   # OpenAI 配置
   openai:
     enabled: false                          # 是否启用
-    api_key: ""                            # API密钥（可用环境变量 OPENAI_API_KEY 覆盖）
+    api_key: ""                            # API密钥
     model_name: "gpt-4-turbo-preview"      # 模型名称: gpt-4, gpt-4-turbo-preview, gpt-3.5-turbo
     base_url: null                         # 自定义API地址（可用环境变量 OPENAI_BASE_URL 覆盖）
                                            # 例如: https://api.openai.com/v1
@@ -18,7 +18,7 @@ ai:
 # RAG 检索配置
 rag:
   # 检索相关
-  max_results: 5                           # 默认检索结果数量
+  max_results: 7                           # 默认检索结果数量
   similarity_threshold: 0.4                # 相似度阈值 (0-1)
   use_hybrid_search: true                  # 是否使用混合检索（语义+关键词）
   keyword_boost: 0.4                       # 关键词检索权重 (0-1)

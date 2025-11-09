@@ -161,7 +161,7 @@ class OpenAIChatManager(BaseChatManager):
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一名检索优化专家。将用户问题改写为信息丰富的陈述句，用于向量检索。直接返回改写后的文本，不要解释。"
+                        "content": "你是一名检索优化专家。将用户问题改写为信息指向更明确的简单陈述句，用于向量数据库的语义检索。请专注于核心意图。"
                     },
                     {
                         "role": "user",
@@ -287,7 +287,7 @@ class SessionManager:
         provider = self.sessions[session_id]['provider']
 
         if provider == 'gemini':
-            print(role)
+            #print(role)
             # Gemini格式
             self.sessions[session_id]['history'].append({
                 'role': role,
