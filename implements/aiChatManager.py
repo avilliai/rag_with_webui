@@ -161,7 +161,7 @@ class OpenAIChatManager(BaseChatManager):
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一名检索优化专家。将用户问题改写为信息指向更明确的简单陈述句，用于向量数据库的语义检索。请专注于核心意图。"
+                        "content": "你是一名检索优化专家。将用户问题提炼为信息指向更明确的问题。用于向量数据库的语义检索。请专注于核心意图。"
                     },
                     {
                         "role": "user",
