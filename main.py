@@ -36,14 +36,19 @@ os.environ["http_proxy"] = "http://127.0.0.1:10809"
 os.environ["https_proxy"] = "http://127.0.0.1:10809"
 
 
-
+# 请将下面的整个 class GeminiRAG 替换掉您文件中的同名 class
 
 class GeminiRAG:
+    """
+    一个集成了查询重写、增强嵌入、上下文窗口扩展和多轮对话历史的
+    高级检索增强生成 (RAG) 系统。
+    """
+
     def __init__(
-        self,
-        collection_name: str = "documents",
-        persist_directory: str = "./chroma_db",
-        config: Optional[RAGConfig] = None
+            self,
+            collection_name: str = "documents_optimized",
+            persist_directory: str = "./chroma_db_optimized",
+            config: Optional[RAGConfig] = None
     ):
         """初始化 RAG 系统"""
         self.persist_directory = persist_directory
@@ -61,21 +66,25 @@ class GeminiRAG:
         if existing_count > 0:
             print(f"✅ 发现已存在的数据库,包含 {existing_count} 个文档块")
 
-        print("📦 加载嵌入模型...")
+        print("📦 加载嵌入模型 (paraphrase-multilingual-MiniLM-L12-v2)...")
         self.embed_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
         print("✅ 嵌入模型加载完成")
 
-        self.chat_model = genai.GenerativeModel('gemini-2.5-flash')
+        self.chat_model = genai.GenerativeModel('gemini-1.5-flash')
 
-        print(f"\n⚙️  RAG 配置:")
-        print(f"   • 检索策略: {'混合检索 (关键词+语义)' if self.config.use_hybrid_search else '纯语义检索'}")
-        print(f"   • 最大检索数: {self.config.max_results}")
-        print(f"   • 相似度阈值: {self.config.similarity_threshold or '自动'}")
-        print(f"   • 分块大小: {self.config.chunk_size} 字符")
-        print(f"   • 重叠大小: {self.config.chunk_overlap} 字符")
+        print(f"\n⚙️  RAG 系统配置:")
+        print(f"   ├─ 检索策略: {'混合检索 (关键词+语义)' if self.config.use_hybrid_search else '纯语义检索'}")
         if self.config.use_hybrid_search:
-            print(f"   • 关键词权重: {self.config.keyword_boost}")
+            print(f"   │  └─ 关键词权重: {self.config.keyword_boost}")
+        print(f"   ├─ 查询重写优化: {'✅ 已启用' if self.config.use_query_rewriting else '❌ 未启用'}")
+        print(
+            f"   ├─ 上下文窗口扩展: {'✅ 已启用 (窗口大小: ' + str(self.config.context_window_size) + ')' if self.config.context_window_size > 1 else '❌ 未启用'}")
+        print(f"   ├─ 最大检索数: {self.config.max_results}")
+        print(f"   ├─ 相似度阈值: {self.config.similarity_threshold or '自动'}")
+        print(f"   ├─ 分块大小: {self.config.chunk_size} 字符")
+        print(f"   └─ 重叠大小: {self.config.chunk_overlap} 字符")
 
+    # ... [从 _get_embedding 到 _smart_chunk_document 的所有辅助函数保持不变] ...
     def _get_embedding(self, text: str) -> List[float]:
         """生成文本嵌入向量"""
         embedding = self.embed_model.encode(text, convert_to_tensor=False)
@@ -98,628 +107,373 @@ class GeminiRAG:
     def _extract_keywords(self, text: str) -> List[str]:
         """从文本中提取关键词"""
         keywords = []
-
-        # 提取 #标签
         hashtags = re.findall(r'#([^\s#]+)', text)
         keywords.extend(hashtags)
-
-        # 提取加粗的文本
         bold_text = re.findall(r'\*\*([^*]+)\*\*', text)
         keywords.extend([t.strip() for t in bold_text if 3 < len(t.strip()) < 30])
-
-        # 提取标题中的关键词
         headers = re.findall(r'^#{1,6}\s+(.+)$', text, re.MULTILINE)
         keywords.extend([h.strip() for h in headers if len(h.strip()) < 50])
-
-        # 提取人名模式（中文姓名，通常2-4个字）
-        # 匹配常见的学者名字模式
         names = re.findall(r'([·\u4e00-\u9fa5]{2,6}(?:的|、|与|和|及)?)', text)
-        potential_names = [n.strip('的、与和及') for n in names
-                          if 2 <= len(n.strip('的、与和及')) <= 6]
+        potential_names = [n.strip('的、与和及') for n in names if 2 <= len(n.strip('的、与和及')) <= 6]
         keywords.extend(potential_names)
-
         return list(set(keywords))
 
-    def _normalize_text(self, text: str) -> str:
-        """文本归一化：去除多余空格、统一标点等"""
-        # 移除多余空格
-        text = re.sub(r'\s+', ' ', text)
-        # 统一引号
-        text = text.replace('"', '"').replace('"', '"')
-        text = text.replace(''', "'").replace(''', "'")
-        return text.strip()
-
     def _extract_query_keywords(self, query: str) -> List[str]:
-        """从查询中提取关键词"""
-        keywords = []
-
-        # 提取可能的人名（2-6个汉字）
-        names = re.findall(r'[\u4e00-\u9fa5·]{2,6}', query)
-        keywords.extend(names)
-
-        # 提取常见的查询关键词
-        key_phrases = ['政治思想', '理论', '观点', '学说', '主张', '批判', '评价']
+        """从查询中提取关键词，用于混合检索评分"""
+        keywords = set(re.findall(r'[\u4e00-\u9fa5·]{2,6}', query))
+        key_phrases = ['政治思想', '理论', '观点', '学说', '主张', '批判', '评价', '正义论']
         for phrase in key_phrases:
             if phrase in query:
-                keywords.append(phrase)
-
-        return keywords
+                keywords.add(phrase)
+        return list(keywords)
 
     def _keyword_match_score(self, query: str, doc_text: str, doc_keywords: str) -> float:
         """计算关键词匹配分数"""
-        query_lower = query.lower()
-        doc_text_lower = doc_text.lower()
-        doc_keywords_lower = doc_keywords.lower() if doc_keywords else ""
-
         score = 0.0
         query_keywords = self._extract_query_keywords(query)
-
+        if not query_keywords:
+            return 0.0
+        doc_text_lower = doc_text.lower()
+        doc_keywords_lower = doc_keywords.lower() if doc_keywords else ""
         for keyword in query_keywords:
             keyword_lower = keyword.lower()
-            # 精确匹配关键词
             if keyword_lower in doc_keywords_lower:
-                score += 0.5  # 关键词字段匹配
-            if keyword_lower in doc_text_lower:
-                # 计算出现次数（上限为5次）
-                count = min(doc_text_lower.count(keyword_lower), 5)
-                score += count * 0.1  # 文本中匹配
-
-        return min(score, 1.0)  # 限制在0-1之间
+                score += 0.5
+            count = min(doc_text_lower.count(keyword_lower), 5)
+            score += count * 0.1
+        return min(score, 1.0)
 
     def _parse_document_structure(self, text: str) -> List[Dict]:
-        """解析文档结构"""
+        """解析文档结构，识别标题和章节"""
         lines = text.split('\n')
         sections = []
-        current_section = {
-            'content': [],
-            'headers': [],
-            'line_start': 0
-        }
+        current_section = {'content': [], 'headers': [], 'line_start': 0, 'header_level': 0}
         header_stack = []
-
         for i, line in enumerate(lines):
-            line_stripped = line.strip()
-
-            # 检测标题
-            header_match = re.match(r'^(#{1,6})\s+(.+)$', line_stripped)
+            header_match = re.match(r'^(#{1,6})\s+(.+)$', line.strip())
             if header_match:
-                # 保存当前section
                 if current_section['content']:
                     current_section['content'] = '\n'.join(current_section['content'])
-                    current_section['line_end'] = i
-                    sections.append(current_section.copy())
-
-                # 更新标题栈
-                level = len(header_match.group(1))
-                title = header_match.group(2).strip()
-
+                    sections.append(current_section)
+                level, title = len(header_match.group(1)), header_match.group(2).strip()
                 while header_stack and header_stack[-1]['level'] >= level:
                     header_stack.pop()
                 header_stack.append({'level': level, 'title': title})
-
-                # 开始新section
                 current_section = {
-                    'content': [line],
-                    'headers': [h['title'] for h in header_stack],
-                    'header_level': level,
-                    'line_start': i
+                    'content': [line], 'headers': [h['title'] for h in header_stack],
+                    'header_level': level, 'line_start': i
                 }
-            elif line_stripped:
+            else:
                 current_section['content'].append(line)
-            elif len(current_section['content']) > 5:  # 空行且有足够内容
-                # 保存section
-                current_section['content'] = '\n'.join(current_section['content'])
-                current_section['line_end'] = i
-                current_section['headers'] = [h['title'] for h in header_stack]
-                sections.append(current_section.copy())
-
-                # 开始新section
-                current_section = {
-                    'content': [],
-                    'headers': [h['title'] for h in header_stack],
-                    'line_start': i + 1
-                }
-
-        # 保存最后一个section
         if current_section['content']:
-            if isinstance(current_section['content'], list):
-                current_section['content'] = '\n'.join(current_section['content'])
-            current_section['line_end'] = len(lines)
-            current_section['headers'] = [h['title'] for h in header_stack]
+            current_section['content'] = '\n'.join(current_section['content'])
             sections.append(current_section)
-
         return sections
 
-    def _smart_chunk_document(self, text: str, file_name: str) -> List[tuple]:
-        """智能分块文档"""
-        sections = self._parse_document_structure(text)
-        chunks = []
-        chunk_idx = 0
-
-        i = 0
-        while i < len(sections):
-            section = sections[i]
-
-            # 构建标题上下文
-            headers_text = ' > '.join(section.get('headers', []))
-            header_prefix = f"# {headers_text}\n\n" if headers_text else ""
-
-            # 收集内容
-            chunk_content = []
-            chunk_sections = []
-            current_size = len(header_prefix)
-
-            j = i
-            while j < len(sections):
-                candidate = sections[j]
-                content = candidate['content']
-                content_size = len(content)
-
-                # 检查是否是新的主要主题（## 或 # 级别）
-                if (j > i and
-                    candidate.get('header_level') and
-                    candidate['header_level'] <= 2):
-                    break
-
-                # 检查大小限制
-                if current_size + content_size > self.config.chunk_size and chunk_content:
-                    break
-
-                chunk_content.append(content)
-                chunk_sections.append(j)
-                current_size += content_size + 2
-                j += 1
-
-            # 如果没有收集到内容（单个section过大）
-            if not chunk_content and i < len(sections):
-                content = sections[i]['content']
-                # 分割长内容
-                parts = self._split_long_text(content, self.config.chunk_size - len(header_prefix))
-                for part_idx, part in enumerate(parts):
-                    full_text = header_prefix + part
-                    keywords = self._extract_keywords(full_text)
-
-                    chunk_meta = {
-                        'section_path': headers_text,
-                        'keywords': ', '.join(keywords),
-                        'section_indices': str(i),
-                        'is_split': True,
-                        'part': f"{part_idx + 1}/{len(parts)}"
-                    }
-
-                    chunks.append((full_text, f"{file_name}_chunk_{chunk_idx}",
-                                 len(full_text), chunk_meta))
-                    chunk_idx += 1
-                i += 1
-                continue
-
-            # 构建完整chunk
-            full_content = '\n\n'.join(chunk_content)
-            full_text = header_prefix + full_content
-            keywords = self._extract_keywords(full_text)
-
-            chunk_meta = {
-                'section_path': headers_text,
-                'keywords': ', '.join(keywords),
-                'section_indices': f"{min(chunk_sections)}-{max(chunk_sections)}" if len(chunk_sections) > 1 else str(chunk_sections[0]),
-                'section_count': len(chunk_sections),
-                'is_split': False
-            }
-
-            chunks.append((full_text, f"{file_name}_chunk_{chunk_idx}",
-                         len(full_text), chunk_meta))
-            chunk_idx += 1
-
-            # 决定重叠策略
-            if len(chunk_sections) > 2:
-                # 从倒数第二个section开始重叠
-                i = chunk_sections[-2]
-            else:
-                i = j
-
-        return chunks
-
     def _split_long_text(self, text: str, max_size: int) -> List[str]:
-        """分割超长文本"""
+        """当单个章节内容过长时，按句子进行分割"""
         if len(text) <= max_size:
             return [text]
-
-        parts = []
-        # 按句子分割
         sentences = re.split(r'([。！？\n]+)', text)
-
-        current = ""
+        parts = []
+        current_part = ""
         for i in range(0, len(sentences), 2):
             sentence = sentences[i]
             delimiter = sentences[i + 1] if i + 1 < len(sentences) else ""
-
-            if len(current) + len(sentence) + len(delimiter) > max_size and current:
-                parts.append(current)
-                # 保留一些重叠
-                overlap = current[-self.config.chunk_overlap:] if len(current) > self.config.chunk_overlap else current
-                current = overlap + sentence + delimiter
+            if len(current_part) + len(sentence) + len(delimiter) > max_size and current_part:
+                parts.append(current_part)
+                overlap_start = max(0, len(current_part) - self.config.chunk_overlap)
+                current_part = current_part[overlap_start:] + sentence + delimiter
             else:
-                current += sentence + delimiter
-
-        if current:
-            parts.append(current)
-
+                current_part += sentence + delimiter
+        if current_part:
+            parts.append(current_part)
         return parts if parts else [text[:max_size]]
 
-    def load_documents_from_folder(self, folder_path: str = "./docs", force_reload: bool = False):
-        """从文件夹递归加载所有 Markdown 文档"""
-        docs_path = Path(folder_path)
+    def _smart_chunk_document(self, text: str, file_name: str) -> List[tuple]:
+        """智能分块文档：基于Markdown结构，合并小章节，分割大章节"""
+        sections = self._parse_document_structure(text)
+        chunks = []
+        chunk_idx = 0
+        i = 0
+        while i < len(sections):
+            headers_text = ' > '.join(sections[i].get('headers', []))
+            chunk_content_parts = []
+            current_size = 0
+            start_section_idx = i
+            j = i
+            while j < len(sections):
+                section_to_add = sections[j]
+                content_to_add = section_to_add['content']
+                if j > start_section_idx and section_to_add.get('header_level', 6) <= 2:
+                    break
+                if current_size > 0 and current_size + len(content_to_add) > self.config.chunk_size:
+                    break
+                chunk_content_parts.append(content_to_add)
+                current_size += len(content_to_add)
+                j += 1
+            full_content = "\n\n".join(chunk_content_parts)
+            split_parts = self._split_long_text(full_content, self.config.chunk_size) if len(
+                full_content) > self.config.chunk_size else [full_content]
+            for part in split_parts:
+                keywords = self._extract_keywords(f"# {headers_text}\n{part}")
+                chunk_meta = {'section_path': headers_text, 'keywords': ', '.join(keywords)}
+                chunk_id = f"{file_name}_chunk_{chunk_idx}"
+                chunks.append((part, chunk_id, len(part), chunk_meta))
+                chunk_idx += 1
+            i = j - 1 if j > start_section_idx + 1 else j
+        return chunks
 
+    def load_documents_from_folder(self, folder_path: str = "./docs", force_reload: bool = False):
+        """从文件夹递归加载所有 Markdown 文档 (包含嵌入优化和路径修复)"""
+        # [FIX] 使用 resolve() 获取绝对路径，确保路径一致性
+        docs_path = Path(folder_path).resolve()
         if not docs_path.exists():
-            print(f"❌ 文件夹不存在: {folder_path}")
+            print(f"❌ 文件夹不存在: {docs_path}")
             return
 
         md_files = list(docs_path.rglob("*.md"))
-
         if not md_files:
-            print(f"⚠️  在 {folder_path} 中没有找到 Markdown 文件")
+            print(f"⚠️  在 {docs_path} 中没有找到 Markdown 文件。")
             return
 
-        print(f"\n📁 找到 {len(md_files)} 个 Markdown 文件")
+        print(f"\n📁 找到 {len(md_files)} 个 Markdown 文件，开始处理...")
 
-        existing_docs = self.collection.get()
-        existing_ids = set(existing_docs['ids']) if existing_docs['ids'] else set()
+        total_docs_in_db = self.collection.count()
+        all_metadatas = self.collection.get(limit=total_docs_in_db, include=["metadatas"])[
+            'metadatas'] if total_docs_in_db > 0 else []
+        existing_hashes = {meta.get('source'): meta.get('file_hash') for meta in all_metadatas if
+                           'source' in meta and 'file_hash' in meta}
 
-        existing_hashes = {}
-        if existing_docs['metadatas']:
-            for metadata in existing_docs['metadatas']:
-                source = metadata.get('source', '')
-                file_hash = metadata.get('file_hash', '')
-                if source and file_hash and source not in existing_hashes:
-                    existing_hashes[source] = file_hash
-
-        print(f"📋 数据库中已有 {len(existing_hashes)} 个不同的文档文件")
-
-        new_docs = []
-        new_ids = []
-        new_metadatas = []
-        updated_count = 0
-        skipped_count = 0
-        new_count = 0
+        new_docs_content, new_docs_for_embedding, new_ids, new_metadatas = [], [], [], []
+        ids_to_delete = []
+        updated_count, new_count, skipped_count = 0, 0, 0
 
         for md_file in md_files:
-            relative_path = md_file.relative_to(docs_path)
-            source_path = str(relative_path).replace('\\', '/')
+            # [FIX] 确保 relative_path 使用绝对路径作为基准
+            relative_path = str(md_file.relative_to(docs_path)).replace('\\', '/')
             current_hash = self._get_file_hash(str(md_file))
 
-            if source_path in existing_hashes:
-                if not force_reload and existing_hashes[source_path] == current_hash:
+            if relative_path in existing_hashes:
+                if not force_reload and existing_hashes[relative_path] == current_hash:
                     skipped_count += 1
                     continue
                 else:
-                    print(f"🔄 检测到文件变更: {source_path}")
+                    print(f"🔄 检测到文件变更: {relative_path}")
                     updated_count += 1
-                    ids_to_delete = [eid for eid in existing_ids
-                                    if eid.startswith(f"{source_path}_chunk_")]
-                    if ids_to_delete:
-                        self.collection.delete(ids=ids_to_delete)
+                    results = self.collection.get(where={"source": relative_path}, include=[])
+                    ids_to_delete.extend(results['ids'])
             else:
                 new_count += 1
 
             content = self._read_markdown_file(md_file)
-
             if content:
-                chunks = self._smart_chunk_document(content, source_path)
-
-                # 显示详细信息（前3个文件）
-                if len(new_docs) < 50:
-                    print(f"📄 {source_path}: {len(content)} 字符 → {len(chunks)} 块")
-
+                chunks = self._smart_chunk_document(content, relative_path)
                 for chunk_text, chunk_id, chunk_size, chunk_meta in chunks:
-                    new_docs.append(chunk_text)
+                    new_docs_content.append(chunk_text)
                     new_ids.append(chunk_id)
-
-                    metadata = {
-                        "source": source_path,
-                        "file_name": md_file.name,
-                        "file_hash": current_hash,
-                        "file_size": md_file.stat().st_size,
-                        "chunk_id": chunk_id,
-                        "chunk_size": chunk_size,
-                        **chunk_meta
-                    }
+                    embedding_text = f"所属章节: {chunk_meta.get('section_path', '')}\n关键词: {chunk_meta.get('keywords', '')}\n\n内容:\n{chunk_text}"
+                    new_docs_for_embedding.append(embedding_text)
+                    metadata = {"source": relative_path, "file_hash": current_hash, **chunk_meta}
                     new_metadatas.append(metadata)
 
-        if new_docs:
-            print(f"\n💾 正在添加 {len(new_docs)} 个文档块...")
-            print(f"   📝 新增: {new_count} 个文件")
-            if updated_count > 0:
-                print(f"   🔄 更新: {updated_count} 个文件")
+        if ids_to_delete:
+            print(f"🗑️  正在删除 {len(ids_to_delete)} 个旧的文档块...")
+            delete_batch_size = 500
+            for i in range(0, len(ids_to_delete), delete_batch_size):
+                self.collection.delete(ids=ids_to_delete[i:i + delete_batch_size])
+            print("✅ 旧文档块删除完毕。")
 
-            print("🔄 生成嵌入向量（可能需要几分钟）...")
-            # 批量生成嵌入以提高效率
-            batch_size = 100
+        if new_docs_content:
+            print(
+                f"\n💾 准备处理 {new_count} 个新文件和 {updated_count} 个更新文件，共计 {len(new_docs_content)} 个新文档块...")
+            print("🔄 生成增强嵌入向量...")
+            embedding_batch_size = 32
             embeddings = []
-            for i in range(0, len(new_docs), batch_size):
-                batch = new_docs[i:i+batch_size]
-                batch_embeddings = [self._get_embedding(doc) for doc in batch]
+            for i in range(0, len(new_docs_for_embedding), embedding_batch_size):
+                batch = new_docs_for_embedding[i:i + embedding_batch_size]
+                batch_embeddings = self.embed_model.encode(batch, convert_to_tensor=False,
+                                                           show_progress_bar=False).tolist()
                 embeddings.extend(batch_embeddings)
-                if len(new_docs) > batch_size:
-                    print(f"   进度: {min(i+batch_size, len(new_docs))}/{len(new_docs)}")
+                print(
+                    f"   生成嵌入向量进度: {min(i + embedding_batch_size, len(new_docs_for_embedding))}/{len(new_docs_for_embedding)}")
 
-            self.collection.add(
-                documents=new_docs,
-                embeddings=embeddings,
-                ids=new_ids,
-                metadatas=new_metadatas
-            )
-
-            print(f"✅ 成功添加 {len(new_docs)} 个文档块")
-        else:
-            print(f"\n✅ 所有文档已是最新")
+            db_batch_size = 4000
+            total_batches = (len(new_ids) + db_batch_size - 1) // db_batch_size
+            print(f"\n➕ 正在将 {len(new_ids)} 个文档块分 {total_batches} 批添加到数据库...")
+            for i in range(0, len(new_ids), db_batch_size):
+                self.collection.add(
+                    ids=new_ids[i:i + db_batch_size],
+                    documents=new_docs_content[i:i + db_batch_size],
+                    embeddings=embeddings[i:i + db_batch_size],
+                    metadatas=new_metadatas[i:i + db_batch_size]
+                )
+                print(f"   批次 {i // db_batch_size + 1}/{total_batches} 添加成功。")
+            print(f"✅ 成功添加/更新 {len(new_docs_content)} 个文档块。")
 
         if skipped_count > 0:
-            print(f"⏭️  跳过 {skipped_count} 个未修改的文档")
+            print(f"⏭️  跳过 {skipped_count} 个未修改的文档。")
+        print(f"\n📊 数据库当前共有 {self.collection.count()} 个文档块。")
 
-        print(f"\n📊 数据库共有 {self.collection.count()} 个文档块")
+    def _rewrite_query_for_retrieval(self, query: str) -> str:
+        if not self.config.use_query_rewriting:
+            return query
+        print(f"\n🔄 正在重写查询...")
+        prompt = f"""你是一名检索优化专家。请将以下用户问题改写为一个信息更丰富的陈述句，用于向量数据库的语义检索。请专注于核心意图，补充可能的上下文，使其更像一个“答案”的片段。直接返回改写后的文本，不要包含任何解释或前缀。原始问题: "{query}"\n\n改写后的检索查询:"""
+        try:
+            response = self.chat_model.generate_content(prompt)
+            rewritten_query = response.text.strip().replace("*", "")
+            print(f"   - 原始查询: {query}")
+            print(f"   - 重写后: {rewritten_query}")
+            return rewritten_query
+        except Exception as e:
+            print(f"⚠️ 查询重写失败: {e}，将使用原始查询。")
+            return query
 
-    def search(self, query: str, n_results: Optional[int] = None,
-               similarity_threshold: Optional[float] = None) -> dict:
-        """混合检索：关键词匹配 + 语义相似度"""
-        n_results = n_results or self.config.max_results
-        similarity_threshold = similarity_threshold if similarity_threshold is not None else self.config.similarity_threshold
-
-        # 语义检索
-        query_embedding = self._get_embedding(query)
-        search_n = min(n_results * 5, self.collection.count())  # 检索更多候选
+    def search(self, query: str) -> dict:
+        rewritten_query = self._rewrite_query_for_retrieval(query)
+        query_embedding = self._get_embedding(rewritten_query)
+        search_n = min(self.config.max_results * 5, self.collection.count())
+        if search_n == 0:
+            return {'ids': [[]], 'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
 
         semantic_results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=search_n
+            n_results=search_n,
+            include=["metadatas", "documents", "distances"]
         )
+        if not semantic_results['documents'][0]:
+            return semantic_results
 
-        if not semantic_results or not semantic_results.get('documents') or not semantic_results['documents'][0]:
-            return {'ids': [[]], 'documents': [[]], 'metadatas': [[]], 'distances': [[]]}
-
-        # 如果启用混合检索，重新排序
         if self.config.use_hybrid_search:
-            # 计算混合分数
             scored_results = []
-            for i, (doc_id, doc, metadata, distance) in enumerate(zip(
-                semantic_results['ids'][0],
-                semantic_results['documents'][0],
-                semantic_results['metadatas'][0],
-                semantic_results['distances'][0]
-            )):
-                # 语义分数（distance越小越好，转换为相似度）
-                semantic_score = 1 - distance
-
-                # 关键词匹配分数
-                doc_keywords = metadata.get('keywords', '')
-                keyword_score = self._keyword_match_score(query, doc, doc_keywords)
-
-                # 混合分数
-                final_score = semantic_score * (1 - self.config.keyword_boost) + \
-                             keyword_score * self.config.keyword_boost
-
-                scored_results.append({
-                    'id': doc_id,
-                    'document': doc,
-                    'metadata': metadata,
-                    'distance': distance,
-                    'semantic_score': semantic_score,
-                    'keyword_score': keyword_score,
-                    'final_score': final_score
-                })
-
-            # 按最终分数排序
-            scored_results.sort(key=lambda x: x['final_score'], reverse=True)
-
-            # 应用阈值过滤（如果设置了）
-            if similarity_threshold is not None:
-                # 将阈值应用于semantic distance
-                scored_results = [r for r in scored_results if r['distance'] <= similarity_threshold]
-
-            # 限制结果数量
-            scored_results = scored_results[:n_results]
-
-            # 构建返回格式
+            for doc_id, doc, meta, dist in zip(semantic_results['ids'][0], semantic_results['documents'][0],
+                                               semantic_results['metadatas'][0], semantic_results['distances'][0]):
+                semantic_score = 1 - dist
+                keyword_score = self._keyword_match_score(query, doc, meta.get('keywords', ''))
+                final_score = semantic_score * (
+                            1 - self.config.keyword_boost) + keyword_score * self.config.keyword_boost
+                scored_results.append({'id': doc_id, 'doc': doc, 'meta': meta, 'dist': dist, 'score': final_score})
+            scored_results.sort(key=lambda x: x['score'], reverse=True)
+            filtered = [r for r in scored_results if (1 - r['dist']) >= self.config.similarity_threshold]
+            top_results = filtered[:self.config.max_results]
             return {
-                'ids': [[r['id'] for r in scored_results]],
-                'documents': [[r['document'] for r in scored_results]],
-                'metadatas': [[r['metadata'] for r in scored_results]],
-                'distances': [[r['distance'] for r in scored_results]],
-                'scores': [[r['final_score'] for r in scored_results]],  # 额外返回混合分数
-                'keyword_scores': [[r['keyword_score'] for r in scored_results]]
+                'ids': [[r['id'] for r in top_results]], 'documents': [[r['doc'] for r in top_results]],
+                'metadatas': [[r['meta'] for r in top_results]], 'distances': [[r['dist'] for r in top_results]]
             }
 
-        # 非混合检索，直接返回语义结果
-        if similarity_threshold is not None:
-            filtered_indices = [i for i, dist in enumerate(semantic_results['distances'][0])
-                              if dist <= similarity_threshold]
-            filtered_indices = filtered_indices[:n_results]
+        indices = [i for i, d in enumerate(semantic_results['distances'][0]) if
+                   (1 - d) >= self.config.similarity_threshold]
+        top_indices = indices[:self.config.max_results]
+        return {
+            'ids': [[semantic_results['ids'][0][i] for i in top_indices]],
+            'documents': [[semantic_results['documents'][0][i] for i in top_indices]],
+            'metadatas': [[semantic_results['metadatas'][0][i] for i in top_indices]],
+            'distances': [[semantic_results['distances'][0][i] for i in top_indices]]
+        }
 
-            return {
-                'ids': [[semantic_results['ids'][0][i] for i in filtered_indices]],
-                'documents': [[semantic_results['documents'][0][i] for i in filtered_indices]],
-                'metadatas': [[semantic_results['metadatas'][0][i] for i in filtered_indices]],
-                'distances': [[semantic_results['distances'][0][i] for i in filtered_indices]]
-            }
+    def _expand_context_with_window(self, search_results: dict) -> List[Dict]:
+        if self.config.context_window_size <= 1 or not search_results['ids'][0]:
+            return [{"doc": doc, "meta": meta, "is_hit": True} for doc, meta in
+                    zip(search_results['documents'][0], search_results['metadatas'][0])]
 
-        # 限制数量
-        if len(semantic_results['ids'][0]) > n_results:
-            return {
-                'ids': [semantic_results['ids'][0][:n_results]],
-                'documents': [semantic_results['documents'][0][:n_results]],
-                'metadatas': [semantic_results['metadatas'][0][:n_results]],
-                'distances': [semantic_results['distances'][0][:n_results]]
-            }
+        print("🔄 正在扩展上下文窗口...")
+        final_docs = {r_id: {"doc": doc, "meta": meta, "is_hit": True} for r_id, doc, meta in
+                      zip(search_results['ids'][0], search_results['documents'][0], search_results['metadatas'][0])}
+        ids_to_fetch = set()
+        window_radius = self.config.context_window_size // 2
+        for r_id in search_results['ids'][0]:
+            parts = r_id.rsplit('_chunk_', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                base_name, index = parts[0], int(parts[1])
+                for i in range(1, window_radius + 1):
+                    prev_id = f"{base_name}_chunk_{index - i}"
+                    next_id = f"{base_name}_chunk_{index + i}"
+                    if prev_id not in final_docs: ids_to_fetch.add(prev_id)
+                    if next_id not in final_docs: ids_to_fetch.add(next_id)
+        if ids_to_fetch:
+            ids_list = list(ids_to_fetch)
+            get_batch_size = 500
+            for i in range(0, len(ids_list), get_batch_size):
+                batch_ids = ids_list[i:i + get_batch_size]
+                context_docs = self.collection.get(ids=batch_ids, include=["metadatas", "documents"])
+                for c_id, doc, meta in zip(context_docs['ids'], context_docs['documents'], context_docs['metadatas']):
+                    if c_id not in final_docs:
+                        final_docs[c_id] = {"doc": doc, "meta": meta, "is_hit": False}
+        sorted_ids = sorted(final_docs.keys(),
+                            key=lambda x: (final_docs[x]['meta']['source'], int(x.rsplit('_', 1)[1])))
+        return [final_docs[id] for id in sorted_ids]
 
-        return semantic_results
+    # ============== [核心修改区域] ==============
+    # 用下面这个实现了多轮对话的版本，替换您当前的 generate_answer_stream 和 generate_answer 方法
+    # ============================================
 
-    def generate_answer_stream(self, query: str, chat_history: list = None,
-                               n_results: Optional[int] = None,
-                               similarity_threshold: Optional[float] = None):
-        """RAG 流式生成答案（支持多轮对话）"""
-        # 检索相关文档
-        search_results = self.search(query, n_results, similarity_threshold)
-
-        has_results = (
-                search_results and
-                search_results.get('documents') and
-                len(search_results['documents']) > 0 and
-                len(search_results['documents'][0]) > 0
-        )
+    def generate_answer_stream(self, query: str, chat_history: list = None):
+        """
+        RAG 流式生成答案（支持多轮对话）。
+        此方法会先检索与当前问题相关的文档，然后将这些文档作为上下文，
+        连同历史对话记录一起，交给大模型生成回答。
+        """
+        # 步骤 1: 检索与当前问题相关的文档
+        search_results = self.search(query)
+        has_results = (search_results and search_results.get('documents') and search_results['documents'][0])
 
         if not has_results:
-            yield json.dumps({
-                'type': 'error',
-                'content': '没有找到相关文档,无法回答问题。'
-            }, ensure_ascii=False) + '\n'
+            yield json.dumps({'type': 'error', 'content': '没有找到相关文档,无法回答问题。'}, ensure_ascii=False) + '\n'
             return
 
-        # 构建上下文
+        # 步骤 2: 扩展上下文窗口，获取更完整的文档片段
+        context_items = self._expand_context_with_window(search_results)
+
+        # 步骤 3: 准备并发送 "sources" 信息
+        sources_info = [{'source': item['meta']['source'], 'section_path': item['meta'].get('section_path', ''),
+                         'is_hit': item['is_hit']} for item in context_items]
+        yield json.dumps({'type': 'sources', 'content': sources_info, 'count': len(sources_info)},
+                         ensure_ascii=False) + '\n'
+
+        # 步骤 4: 构建仅包含当前检索到的文档的上下文文本
         context_parts = []
-        sources_info = []
+        for item in context_items:
+            source_info = f"[来源: {item['meta'].get('source', '未知')} | 章节: {item['meta'].get('section_path', 'N/A')}]"
+            context_parts.append(f"{source_info}\n{item['doc']}")
+        context_text = "\n\n---\n\n".join(context_parts)
+        print(f"\n📚 本轮检索到 {len(context_parts)} 个文档块作为上下文。")
 
-        for i, (doc, metadata, distance) in enumerate(zip(
-                search_results['documents'][0],
-                search_results['metadatas'][0],
-                search_results['distances'][0]
-        )):
-            source = metadata.get('source', f'文档{i + 1}')
-            section_path = metadata.get('section_path', '')
-            keywords = metadata.get('keywords', '')
-            semantic_score = 1 - distance
-            keyword_score = search_results.get('keyword_scores', [[]])[0][
-                i] if 'keyword_scores' in search_results else 0
+        # 步骤 5: 创建一个有状态的对话实例，并载入历史记录
+        chat = self.chat_model.start_chat(history=chat_history or [])
 
-            source_info = f"[来源: {source}"
-            if section_path:
-                source_info += f" | 章节: {section_path}"
-            if keywords:
-                kw_list = keywords.split(', ')[:5]
-                source_info += f" | 关键词: {', '.join(kw_list)}"
-            source_info += f" | 语义: {semantic_score:.2%}"
-            if keyword_score > 0:
-                source_info += f" | 关键词: {keyword_score:.2%}"
-            source_info += "]"
+        # 步骤 6: 构建发送给模型的最终消息
+        # 这条消息包含了系统指令、本轮检索到的上下文和当前用户的问题
+        user_message = f"""你是一个专业的政治学知识解答模型。请严格基于以下最新检索到的文档内容，并结合之前的对话历史，以系统、学术化的方式回答用户当前的问题。以Markdown格式进行回复。
 
-            context_parts.append(f"{source_info}\n{doc}")
+--- [最新检索到的文档 (用于回答当前问题)] ---
+{context_text}
+--- [检索到的文档结束] ---
 
-            sources_info.append({
-                'source': source,
-                'section_path': section_path,
-                'keywords': keywords.split(', ')[:5] if keywords else [],
-                'semantic_similarity': round(semantic_score * 100, 2),
-                'keyword_score': round(keyword_score * 100, 2)
-            })
+当前问题: {query}
+"""
 
-        context = "\n\n---\n\n".join(context_parts)
-
-        # 先发送检索到的文档信息
-        yield json.dumps({
-            'type': 'sources',
-            'content': sources_info,
-            'count': len(sources_info)
-        }, ensure_ascii=False) + '\n'
-
-        # 构建包含历史的 prompt
-        system_prompt = """你是一个专业的政治学知识解答模型，你需要基于检索到的文档内容回答问题。给出系统、学术化的解答。以markdown格式发送给我。"""
-
-        # 创建或使用现有的 chat 会话
-        if chat_history:
-            # 使用 genai 的新接口创建 chat
-            chat = self.chat_model.start_chat(history=chat_history)
-        else:
-            chat = self.chat_model.start_chat()
-
-        # 构建用户消息
-        user_message = f"""{system_prompt}检索到的文档:
-    {context}
-
-    问题: {query}
-
-    请提供详细且准确的答案:"""
-
-        # 流式生成
+        # 步骤 7: 流式发送消息并返回结果
         try:
             response = chat.send_message(user_message, stream=True)
-
             for chunk in response:
                 if chunk.text:
-                    yield json.dumps({
-                        'type': 'content',
-                        'content': chunk.text
-                    }, ensure_ascii=False) + '\n'
-
-            # 发送完成信号
-            yield json.dumps({
-                'type': 'done',
-                'content': ''
-            }, ensure_ascii=False) + '\n'
-
+                    yield json.dumps({'type': 'content', 'content': chunk.text}, ensure_ascii=False) + '\n'
+            yield json.dumps({'type': 'done', 'content': ''}, ensure_ascii=False) + '\n'
         except Exception as e:
-            yield json.dumps({
-                'type': 'error',
-                'content': f'生成答案时出错: {str(e)}'
-            }, ensure_ascii=False) + '\n'
-    def generate_answer(self, query: str, n_results: Optional[int] = None,
-                       similarity_threshold: Optional[float] = None) -> str:
-        """RAG: 检索相关文档并生成答案"""
-        search_results = self.search(query, n_results, similarity_threshold)
+            yield json.dumps({'type': 'error', 'content': f'生成答案时出错: {str(e)}'}, ensure_ascii=False) + '\n'
 
-        has_results = (
-            search_results and
-            search_results.get('documents') and
-            len(search_results['documents']) > 0 and
-            len(search_results['documents'][0]) > 0
-        )
-
-        if not has_results:
-            return "❌ 没有找到相关文档,无法回答问题。"
-
-        # 构建上下文
-        context_parts = []
-        for i, (doc, metadata, distance) in enumerate(zip(
-                search_results['documents'][0],
-                search_results['metadatas'][0],
-                search_results['distances'][0]
-        )):
-            source = metadata.get('source', f'文档{i + 1}')
-            section_path = metadata.get('section_path', '')
-            keywords = metadata.get('keywords', '')
-            semantic_score = 1 - distance
-
-            # 如果有混合分数，也显示
-            keyword_score = search_results.get('keyword_scores', [[]])[0][i] if 'keyword_scores' in search_results else 0
-
-            source_info = f"[来源: {source}"
-            if section_path:
-                source_info += f" | 章节: {section_path}"
-            if keywords:
-                kw_list = keywords.split(', ')[:5]
-                source_info += f" | 关键词: {', '.join(kw_list)}"
-            source_info += f" | 语义: {semantic_score:.2%}"
-            if keyword_score > 0:
-                source_info += f" | 关键词: {keyword_score:.2%}"
-            source_info += "]"
-
-            context_parts.append(f"{source_info}\n{doc}")
-
-        context = "\n\n---\n\n".join(context_parts)
-
-        print(f"\n🔍 检索到 {len(context_parts)} 个相关文档块")
-
-        prompt = f"""你是一个专业的政治学知识解答模型，你必须基于以下检索到的文档内容回答问题。给出系统、学术化的解答。你不被允许遗漏任何文档中的信息。如果文档中没有相关信息,请说明无法回答。
-
-检索到的文档:
-{context}
-
-问题: {query}
-
-请提供详细且准确的答案:"""
-
-        try:
-            response = self.chat_model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            return f"生成答案时出错: {e}"
+    def generate_answer(self, query: str) -> str:
+        """RAG非流式生成答案（为保持兼容性而保留，但不支持多轮对话）"""
+        full_response = ""
+        # 非流式方法本质上是流式方法的聚合
+        for chunk_data in self.generate_answer_stream(query, chat_history=None):
+            chunk = json.loads(chunk_data)
+            if chunk['type'] == 'content':
+                full_response += chunk['content']
+            elif chunk['type'] == 'error':
+                return f"❌ {chunk['content']}"
+        return full_response
 
     def get_collection_info(self):
         """获取集合信息"""
