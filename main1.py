@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import uuid
 from collections import defaultdict
 from typing import Optional
@@ -10,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
-
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from implements.RagCore import RAGRetriever, RAGConfig
 from implements.aiChatManager import (
     GeminiChatManager,
